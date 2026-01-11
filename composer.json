@@ -1,5 +1,5 @@
 {
-  "name": "mono",
+  "name": "nicholashomyk/php-monolith-starter",
   "description": "Production-ready PHP monolith with SQL, Docker, CI, and Playwright E2E",
   "type": "project",
   "autoload": {
