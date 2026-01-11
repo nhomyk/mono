@@ -1,0 +1,43 @@
+name: Playwright E2E
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Install Playwright and deps
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v3
+        with:
+          php-version: '8.1'
+          extensions: pdo, pdo_sqlite
+      - name: Install composer deps
+        run: composer install --no-interaction --prefer-dist
+      - name: Init DB (sqlite file)
+        run: |
+          mkdir -p data
+          php scripts/init_db.php
+      - name: Start PHP dev server
+        run: php -S 127.0.0.1:8080 -t public >/tmp/php-server.log 2>&1 &
+      - name: Wait for server
+        run: |
+          n=0
+          until curl --silent --fail http://127.0.0.1:8080 || [ $n -gt 15 ]; do
+            n=$((n+1))
+            sleep 1
+          done
+      - name: Run Playwright tests
+        working-directory: tests/e2e
+        run: npx playwright test --reporter=list

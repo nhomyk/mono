@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  php-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v3
+        with:
+          php-version: '8.1'
+          extensions: pdo, pdo_sqlite
+          coverage: xdebug
+      - name: Install composer deps
+        run: composer install --no-interaction --prefer-dist
+      - name: PHP lint
+        run: find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
+      - name: Static analysis (PHPStan)
+        run: composer run analyze
+      - name: Run unit tests with coverage
+        env:
+          DB_DSN: 'sqlite::memory:'
+        run: composer test -- --coverage-text --colors=never
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
