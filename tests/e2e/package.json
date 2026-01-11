@@ -1,6 +1,7 @@
 {
-  "name": "e2e",
+  "name": "php-monolith-starter-e2e",
   "private": true,
+  "description": "Playwright E2E tests for php-monolith-starter",
   "devDependencies": {
     "@playwright/test": "^1.36.0"
   },
