@@ -3,3 +3,16 @@
 /.env
 /.idea
 /.vscode
+# Node
+node_modules/
+
+# Playwright artifacts
+tests/e2e/artifacts/
+tests/e2e/playwright-report/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+

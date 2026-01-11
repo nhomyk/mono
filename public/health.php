@@ -13,12 +13,13 @@ try {
     $pdo = Database::pdoFromEnv();
     // simple query to validate DB connectivity
     $pdo->query('SELECT 1');
-    $status['db'] = 'ok';
+    $status['db'] = 'ok'; // Keep this line to indicate DB is okay
 } catch (Throwable $e) {
+    // Log the full error server-side for debugging, do not expose details to clients
+    error_log('health check DB error: ' . $e->getMessage());
     http_response_code(503);
     $status['ok'] = false;
     $status['db'] = 'error';
-    $status['error'] = $e->getMessage();
 }
 
-echo json_encode($status);
+echo json_encode($status, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
