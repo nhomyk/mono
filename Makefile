@@ -31,9 +31,9 @@ test:
 	# Run PHPUnit via php image (assumes vendor is present)
 	docker run --rm -v $(PWD):/app -w /app php:8.1-cli bash -lc "vendor/bin/phpunit --colors=never --log-junit=phpunit.xml || true"
 
-e2e:
+	e2e:
 	# Run Playwright E2E locally (requires node + playwright installed)
-	cd tests/e2e && npm ci && npx playwright install --with-deps
+	cd tests/e2e && (npm ci || npm install) && npx playwright install --with-deps
 	# Wait for local server health before running tests
 	./tests/e2e/wait-for-server.sh http://127.0.0.1:8080/health 60
 	cd tests/e2e && npx playwright test
