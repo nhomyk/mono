@@ -7,7 +7,8 @@ final class XssTest extends TestCase
 {
     public function testOutputIsEscapedToPreventXss(): void
     {
-        putenv('DB_DSN=sqlite::memory:');
+        $dbFile = sys_get_temp_dir() . '/' . uniqid('mono_test_', true) . '.sqlite';
+        putenv('DB_DSN=sqlite:' . $dbFile);
         $pdo = Database::pdoFromEnv();
         $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
 

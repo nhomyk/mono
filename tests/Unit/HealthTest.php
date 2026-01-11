@@ -7,7 +7,8 @@ final class HealthTest extends TestCase
 {
     public function testHealthEndpointReturnsOk(): void
     {
-        putenv('DB_DSN=sqlite::memory:');
+        $dbFile = sys_get_temp_dir() . '/' . uniqid('mono_test_', true) . '.sqlite';
+        putenv('DB_DSN=sqlite:' . $dbFile);
         // No table needed; Database::pdoFromEnv should work
 
         // Capture health output

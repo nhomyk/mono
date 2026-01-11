@@ -7,7 +7,8 @@ final class DatabaseTest extends TestCase
 {
     public function testPdoCanBeCreatedUsingSqliteMemory(): void
     {
-        putenv('DB_DSN=sqlite::memory:');
+        $dbFile = sys_get_temp_dir() . '/' . uniqid('mono_test_', true) . '.sqlite';
+        putenv('DB_DSN=sqlite:' . $dbFile);
         $pdo = Database::pdoFromEnv();
         $this->assertInstanceOf(PDO::class, $pdo);
         $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT)');

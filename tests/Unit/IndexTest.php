@@ -7,7 +7,8 @@ final class IndexTest extends TestCase
 {
     public function testFormSubmissionSavesToDatabase(): void
     {
-        putenv('DB_DSN=sqlite::memory:');
+        $dbFile = sys_get_temp_dir() . '/' . uniqid('mono_test_', true) . '.sqlite';
+        putenv('DB_DSN=sqlite:' . $dbFile);
 
         // Ensure table exists
         $pdo = Database::pdoFromEnv();
