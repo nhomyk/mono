@@ -1,0 +1,63 @@
+name: PHPUnit CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  php-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v4
+        with:
+          php-version: '8.1'
+
+      - name: Run PHP lint
+        run: |
+          set -euo pipefail
+          echo "Finding PHP files to lint..."
+          files=$(git ls-files '*.php' | grep -v '^vendor/' || true)
+          if [ -z "$files" ]; then
+            echo "No PHP files found; skipping lint"
+            exit 0
+          fi
+          echo "$files" | xargs -n1 -I{} php -l "{}"
+
+  phpunit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v4
+        with:
+          php-version: '8.1'
+          extensions: pdo, pdo_sqlite
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "CACHE_DIR=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.CACHE_DIR }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Validate composer.json
+        run: composer validate --no-interaction || true
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Run PHPUnit
+        run: composer test -- --coverage-text --colors=never

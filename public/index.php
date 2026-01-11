@@ -1,6 +1,18 @@
 <?php
 declare(strict_types=1);
-session_start();
+
+// Do not call session_start() when running under CLI (tests) or when headers
+// have already been sent by the test runner. In CLI tests we emulate a session
+// by ensuring $_SESSION exists.
+if (PHP_SAPI === 'cli') {
+  if (!isset($_SESSION)) {
+    $_SESSION = [];
+  }
+} else {
+  if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
+    session_start();
+  }
+}
 
 require __DIR__ . '/../vendor/autoload.php';
 

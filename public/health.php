@@ -4,8 +4,13 @@ require __DIR__ . '/../vendor/autoload.php';
 
 use App\Database;
 
-http_response_code(200);
-header('Content-Type: application/json; charset=utf-8');
+// Only send HTTP headers when not running under CLI and when headers haven't
+// already been sent (PHPUnit/CLI may have emitted output). Tests capture the
+// script output via output buffering, so headers are unnecessary there.
+if (PHP_SAPI !== 'cli' && !headers_sent()) {
+    http_response_code(200);
+    header('Content-Type: application/json; charset=utf-8');
+}
 
 $status = ['ok' => true];
 try {
@@ -16,7 +21,9 @@ try {
 } catch (Throwable $e) {
     // Log the full error server-side for debugging, do not expose details to clients
     error_log('health check DB error: ' . $e->getMessage());
-    http_response_code(503);
+    if (PHP_SAPI !== 'cli' && !headers_sent()) {
+        http_response_code(503);
+    }
     $status['ok'] = false;
     $status['db'] = 'error';
 }
