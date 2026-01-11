@@ -210,18 +210,3 @@ to `npm install`.
   deployments, consider adding secure secret management, logging, and a
   process supervisor.
 
-## Next steps & suggestions
-
-- Add more unit and E2E tests for edge cases and error scenarios.
-- Harden PHPStan rules and add `phpstan.neon` for CI enforcement.
-- Optionally add CodeQL or other security scanners to CI.
-- I can add automated artifact uploads for Playwright traces/screenshots
-  if you'd like.
-
----
-
-Quick start reminders:
-
-- Build & run with Docker: `docker-compose up --build -d`
-- Init DB: `docker-compose exec app php scripts/init_db.php`
-- Native dev: `composer install && php scripts/init_db.php && php -S 127.0.0.1:8080 -t public`
