@@ -53,15 +53,99 @@ docker-compose exec app php scripts/init_db.php
 open http://127.0.0.1:8080
 ```
 
-4. Run E2E (locally or via Makefile):
+# php-monolith-starter
+
+Production-ready PHP monolith focusing on simplicity and auditability. The app
+accepts a single text input from a web form and stores it in a SQL database.
+Runtime dependencies are minimal (PHP + a SQL database); developer tooling
+includes PHPUnit, Playwright, Docker, and GitHub Actions for CI.
+
+## Technologies
+
+- PHP 8.x (recommended)
+- PDO for database access (SQLite by default; configurable via `DB_DSN`)
+- SQLite (default dev DB) — supports easy local testing
+- MySQL/Postgres (configurable via `DB_DSN`) for production
+- nginx + php-fpm (Docker deployment)
+- Docker & docker-compose for reproducible dev and CI environments
+- Composer for dependency management
+- PHPUnit for unit/integration tests
+- Playwright (Node) for E2E tests
+- GitHub Actions for CI (PHP lint, PHPStan, PHPUnit, Playwright)
+- PHPStan for static analysis
+- Makefile for common developer tasks
+- Dependabot for dependency updates
+
+## Architecture overview
+
+- `public/index.php` — single front-controller: renders the form, validates
+  input, performs CSRF verification, inserts into the `items` table, and
+  renders recent entries (escaped with `htmlspecialchars()` to prevent XSS).
+- `src/Database.php` — helper that returns a PDO instance based on
+  environment variables: `DB_DSN`, `DB_USER`, `DB_PASS`. Defaults to
+  `data/db.sqlite` when `DB_DSN` is unset.
+- `scripts/init_db.php` — idempotent script that creates the `items` table.
+- `public/health.php` — JSON health endpoint used by CI to verify readiness.
+  It logs DB errors server-side and returns minimal JSON to clients.
+- Tests live under `tests/Unit` (PHPUnit) and `tests/e2e` (Playwright).
+
+## Security & hardening
+
+- CSRF: `public/index.php` generates and verifies a session-backed CSRF token
+  for POST submissions.
+- XSS: all user values rendered to the page are escaped with
+  `htmlspecialchars()`.
+- Health endpoint: avoids leaking raw DB errors to clients; errors are
+  written to server logs instead.
+- Audit: no known secrets are committed; `.gitignore` excludes common
+  artifacts (node_modules, Playwright traces, logs).
+
+## Files of interest
+
+- `public/index.php` — application entry and form
+- `public/health.php` — readiness endpoint for CI
+- `src/Database.php` — PDO creation from environment
+- `scripts/init_db.php` — creates `items` table
+- `tests/Unit/*` — PHPUnit tests (validation, CSRF, XSS, integration)
+- `tests/e2e/*` — Playwright tests and config (`playwright.config.ts`)
+- `.github/workflows/*` — CI workflows (unit tests, static analysis, E2E)
+- `Dockerfile`, `docker-compose.yml`, `docker/nginx.conf` — container
+  runtime and nginx config
+
+## Running locally
+
+Prerequisites: PHP >= 8.0 and Composer for native runs; Docker is
+recommended for reproducible environments. Node is required only for
+Playwright E2E tests.
+
+### Using Docker (recommended)
+
+1. Build and start services (php-fpm + nginx):
 
 ```bash
-make e2e
+docker-compose up --build -d
+```
+
+2. Initialize the DB inside the app container:
+
+```bash
+docker-compose exec app php scripts/init_db.php
+```
+
+3. Open the site at http://127.0.0.1:8080
+
+4. Run Playwright E2E (from host or CI):
+
+```bash
+cd tests/e2e
+npm ci || npm install
+npx playwright install --with-deps
+npx playwright test
 ```
 
 ### Native (no Docker)
 
-1. Install PHP dev deps:
+1. Install PHP dev dependencies:
 
 ```bash
 composer install
@@ -90,74 +174,54 @@ composer run analyze
 
 ```bash
 cd tests/e2e
-npm install
+npm ci || npm install
 npx playwright install --with-deps
-# start server in background (if not using Docker)
-tests/e2e/wait-for-server.sh http://127.0.0.1:8080/health 60
+# ensure server is healthy before running tests
+./wait-for-server.sh http://127.0.0.1:8080/health 60
 npx playwright test
 ```
 
 ## CI
 
-- `ci.yml` runs PHP lint, PHPStan static analysis, and PHPUnit with coverage (uploads to Codecov if configured).
-- `playwright.yml` builds a test environment, starts the PHP server, waits for `/health`, and runs Playwright tests. It prefers `npm ci` but falls back to `npm install` if no lockfile exists.
+- Unit & static analysis workflow: `.github/workflows/phpunit.yml` — sets up
+  PHP, lints PHP files (`php -l`), installs Composer deps and runs PHPUnit
+  and PHPStan.
+- Playwright workflow: `.github/workflows/playwright.yml` — prepares Node,
+  installs Playwright, starts the PHP server, waits for `/health`, runs
+  E2E tests and uploads artifacts (screenshots/traces) on failure.
+
+Notes: the workflow uses `shivammathur/setup-php@v2` and caches Composer
+dependencies for speed; Playwright install prefers `npm ci` with a fallback
+to `npm install`.
+
+## Testing details
+
+- PHPUnit tests run in isolated environments and use file-backed SQLite
+  DSNs during tests so multiple PDO connections share the same database file.
+- The test suite includes checks for validation, CSRF handling, XSS
+  escaping, integration flow, and a SQL injection test that verifies the
+  app uses prepared statements.
 
 ## Production notes
 
-- Set `DB_DSN`, `DB_USER`, and `DB_PASS` for production database connectivity (MySQL/Postgres). Example MySQL DSN: `mysql:host=host;dbname=name;charset=utf8mb4`.
-- The provided `Dockerfile` is a simple multi-stage production build. For production deployments, consider adding config for secrets, proper logging, environment-specific configuration, and a process manager.
-- `public/health.php` returns DB error messages for debugging; remove or reduce detail in production.
+- Configure `DB_DSN`, `DB_USER`, and `DB_PASS` for your production DB.
+- For MySQL set a DSN like: `mysql:host=host;dbname=name;charset=utf8mb4`.
+- The provided `Dockerfile` is a minimal multi-stage build; for production
+  deployments, consider adding secure secret management, logging, and a
+  process supervisor.
 
 ## Next steps & suggestions
 
-- Add more unit tests and E2E scenarios covering edge cases.
-- Harden PHPStan rules and add a `phpstan.neon` configuration.
-- Add artifact upload of Playwright screenshots/trace to CI for easier debugging (I can add this if you want).
+- Add more unit and E2E tests for edge cases and error scenarios.
+- Harden PHPStan rules and add `phpstan.neon` for CI enforcement.
+- Optionally add CodeQL or other security scanners to CI.
+- I can add automated artifact uploads for Playwright traces/screenshots
+  if you'd like.
 
 ---
 
-If you'd like, I can commit a final pass to run `composer install` and produce a full `tests/e2e/package-lock.json` from a Node environment, or add automated artifact uploads to the Playwright workflow.
-# Simple Monolith
+Quick start reminders:
 
-Run locally (PHP >=8.0):
-
-- Install dev tools: `composer install`
-- Initialize DB: `php scripts/init_db.php`
-- Start dev server: `php -S 127.0.0.1:8080 -t public`
-- Open `http://127.0.0.1:8080`
-
-Set DB_DSN/DB_USER/DB_PASS environment variables for production.
-
-Docker (recommended for reproducible dev):
-
-1. Build and start services:
-
-```bash
-docker-compose up --build
-```
-
-2. Open `http://127.0.0.1:8080`
-
-Notes:
-- The app uses SQLite by default with `data/db.sqlite` when `DB_DSN` is not set.
-- To run migrations inside the container:
-
-```bash
-docker-compose exec app php scripts/init_db.php
-```
-
-If Docker is not available, run the app and tests locally using PHP/Composer directly:
-
-```bash
-# Install PHP dev deps
-composer install
-
-# Initialize DB
-php scripts/init_db.php
-
-# Run unit tests
-composer test
-
-# Start dev server
-php -S 127.0.0.1:8080 -t public
-```
+- Build & run with Docker: `docker-compose up --build -d`
+- Init DB: `docker-compose exec app php scripts/init_db.php`
+- Native dev: `composer install && php scripts/init_db.php && php -S 127.0.0.1:8080 -t public`
