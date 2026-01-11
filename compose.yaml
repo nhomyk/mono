@@ -1,0 +1,10 @@
+services:
+  e2e:
+    image: e2e
+    build:
+      context: tests/e2e
+      dockerfile: ./Dockerfile
+    environment:
+      NODE_ENV: production
+    ports:
+      - 3000:3000

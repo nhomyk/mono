@@ -19,7 +19,7 @@ jobs:
           npm ci
           npx playwright install --with-deps
       - name: Setup PHP
-        uses: shivammathur/setup-php@v3
+        uses: shivammathur/setup-php@v2
         with:
           php-version: '8.1'
           extensions: pdo, pdo_sqlite
@@ -31,13 +31,10 @@ jobs:
           php scripts/init_db.php
       - name: Start PHP dev server
         run: php -S 127.0.0.1:8080 -t public >/tmp/php-server.log 2>&1 &
-      - name: Wait for server
+      - name: Wait for server (health)
         run: |
-          n=0
-          until curl --silent --fail http://127.0.0.1:8080 || [ $n -gt 15 ]; do
-            n=$((n+1))
-            sleep 1
-          done
+          chmod +x tests/e2e/wait-for-server.sh
+          tests/e2e/wait-for-server.sh http://127.0.0.1:8080/health 60
       - name: Run Playwright tests
         working-directory: tests/e2e
         run: npx playwright test --reporter=list

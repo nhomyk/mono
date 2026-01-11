@@ -33,7 +33,10 @@ test:
 
 e2e:
 	# Run Playwright E2E locally (requires node + playwright installed)
-	cd tests/e2e && npm ci && npx playwright install --with-deps && npx playwright test
+	cd tests/e2e && npm ci && npx playwright install --with-deps
+	# Wait for local server health before running tests
+	./tests/e2e/wait-for-server.sh http://127.0.0.1:8080/health 60
+	cd tests/e2e && npx playwright test
 
 clean:
 	rm -rf vendor
