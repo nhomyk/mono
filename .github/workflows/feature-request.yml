@@ -71,6 +71,31 @@ jobs:
           pip install "agenticqa @ git+https://github.com/nhomyk/AgenticQA.git#subdirectory=AgenticQA"
           pip install pytest
 
+      - name: Configure git identity
+        run: |
+          git config user.name "agenticqa-bot[bot]"
+          git config user.email "agenticqa-bot[bot]@users.noreply.github.com"
+
+      - name: Run deployment preflight check
+        run: |
+          python -m agenticqa.client_preflight \
+            --repo "${{ inputs.repo_path }}" \
+            --json \
+            | tee /tmp/preflight.json
+
+          echo "## Preflight Check" >> $GITHUB_STEP_SUMMARY
+          python -c "
+          import json
+          with open('/tmp/preflight.json') as f:
+              data = json.load(f)
+          print('| Check | Status | Message |')
+          print('|-------|--------|---------|')
+          for c in data['checks']:
+              icon = {'pass': 'white_check_mark', 'warn': 'warning', 'fail': 'x'}[c['status']]
+              print(f'| {c[\"name\"]} | :{icon}: | {c[\"message\"]} |')
+          " >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
       - name: Validate concurrent worker system
         run: |
           echo "## Concurrent Worker System Validation" >> $GITHUB_STEP_SUMMARY
