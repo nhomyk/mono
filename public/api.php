@@ -110,6 +110,66 @@ $router->delete('/api/items/:id', function (array $params, array $body) use ($pd
     return [200, ['deleted' => true, 'id' => $id]];
 });
 
+// GET /api/items/search — full-text search with highlighting
+$router->get('/api/items/search', function (array $params, array $body) use ($pdo): array {
+    $query = trim((string)($_GET['q'] ?? ''));
+
+    if ($query === '') {
+        return [400, ['error' => 'Query parameter "q" is required']];
+    }
+
+    if (strlen($query) > 200) {
+        return [400, ['error' => 'Query must be 200 characters or fewer']];
+    }
+
+    $stmt = $pdo->prepare(
+        'SELECT id, value, created_at FROM items WHERE value LIKE :q ORDER BY id DESC LIMIT 50'
+    );
+    $stmt->execute([':q' => '%' . $query . '%']);
+    $items = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+    // Add highlighting
+    $highlighted = array_map(function (array $item) use ($query): array {
+        $item['highlighted'] = str_ireplace(
+            $query,
+            '<mark>' . htmlspecialchars($query) . '</mark>',
+            htmlspecialchars($item['value'])
+        );
+        return $item;
+    }, $items);
+
+    return [200, [
+        'data' => $highlighted,
+        'query' => $query,
+        'total' => count($highlighted),
+    ]];
+});
+
+// GET /api/items/export — export items as CSV or JSON
+$router->get('/api/items/export', function (array $params, array $body) use ($pdo): array {
+    $format = strtolower(trim((string)($_GET['format'] ?? 'json')));
+
+    if (!in_array($format, ['json', 'csv'], true)) {
+        return [400, ['error' => 'Format must be "json" or "csv"']];
+    }
+
+    $stmt = $pdo->query('SELECT id, value, created_at FROM items ORDER BY id DESC');
+    $items = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+    if ($format === 'csv') {
+        $lines = ["id,value,created_at"];
+        foreach ($items as $item) {
+            // Escape CSV values (double-quote fields containing commas/quotes/newlines)
+            $escapedValue = '"' . str_replace('"', '""', $item['value']) . '"';
+            $lines[] = $item['id'] . ',' . $escapedValue . ',' . $item['created_at'];
+        }
+        // Return CSV as a data field (actual Content-Type header set in dispatch)
+        return [200, ['format' => 'csv', 'content' => implode("\n", $lines), 'count' => count($items)]];
+    }
+
+    return [200, ['format' => 'json', 'data' => $items, 'count' => count($items)]];
+});
+
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 $method = $_SERVER['REQUEST_METHOD'];
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
