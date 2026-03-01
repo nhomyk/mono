@@ -1,0 +1,35 @@
+name: AgenticQA Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  security-scan:
+    name: AI Agent Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run AgenticQA scan
+        id: scan
+        uses: nhomyk/AgenticQA@main
+        with:
+          path: '.'
+          fail-on-critical: 'false'
+          output-file: 'agenticqa-results.json'
+          sarif: 'true'
+
+      - name: Print scan summary
+        if: always()
+        run: |
+          echo "## AgenticQA Security Scan Results"
+          echo "- Total findings: ${{ steps.scan.outputs.total-findings }}"
+          echo "- Critical findings: ${{ steps.scan.outputs.critical-findings }}"
+          echo "- Risk level: ${{ steps.scan.outputs.risk-level }}"
+          echo "- Scanners passed: ${{ steps.scan.outputs.scanners-ok }}"
