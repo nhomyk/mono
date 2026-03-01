@@ -68,7 +68,7 @@ jobs:
       - name: Install AgenticQA
         run: |
           python -m pip install --upgrade pip
-          pip install "agenticqa @ git+https://github.com/nhomyk/AgenticQA.git"
+          pip install "agenticqa @ git+https://github.com/nhomyk/AgenticQA.git#subdirectory=AgenticQA"
           pip install pytest
 
       - name: Validate concurrent worker system
@@ -296,7 +296,7 @@ jobs:
       - name: Install AgenticQA
         run: |
           python -m pip install --upgrade pip
-          pip install "agenticqa @ git+https://github.com/nhomyk/AgenticQA.git"
+          pip install "agenticqa @ git+https://github.com/nhomyk/AgenticQA.git#subdirectory=AgenticQA"
 
       - name: Simulate 3 concurrent requests
         run: |
