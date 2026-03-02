@@ -1,0 +1,37 @@
+name: MCP Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  mcp-security:
+    name: MCP Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run MCP Security Scan
+        id: scan
+        uses: nhomyk/mcp-scan-action@v1
+        with:
+          fail-on-critical: 'false'
+          sarif-output: 'mcp-scan-results.sarif'
+          upload-sarif: 'true'
+
+      - name: Print scan summary
+        if: always()
+        run: |
+          echo "Risk level:     ${{ steps.scan.outputs.risk-level }}"
+          echo "Total findings: ${{ steps.scan.outputs.findings-count }}"
+          echo "Critical:       ${{ steps.scan.outputs.critical-count }}"
