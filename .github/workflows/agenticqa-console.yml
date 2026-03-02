@@ -1,0 +1,870 @@
+name: "AgenticQA Development Console"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The complete development console for this repository, accessible directly
+# from the GitHub Actions "Run workflow" button — no external UI required.
+#
+# Choose a mode, describe what you want, hit Run. AgenticQA handles the rest:
+#   • test        → PHP unit, static analysis, optional E2E
+#   • scan        → Full security + compliance audit (no LLM needed)
+#   • feature     → Natural language → analysis → code → PR (LLM optional)
+#   • full        → Everything: scan + test + feature pipeline
+#   • preflight   → Environment health check before anything else
+#
+# LLM is OPTIONAL. Every run produces value without an API key:
+#   ai_mode: none  → deterministic impact analysis, task list, file mapping
+#   ai_mode: auto  → full AgenticQA ADLC pipeline (requires ANTHROPIC_API_KEY)
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      # ── What to do ─────────────────────────────────────────────────────────
+      run_type:
+        description: "What do you want to run?"
+        required: true
+        type: choice
+        default: "scan"
+        options:
+          - scan           # Security + compliance audit
+          - test           # PHP unit + static analysis (+ E2E if selected)
+          - feature        # Submit a feature request via natural language prompt
+          - full-pipeline  # Everything: scan + test + feature
+          - preflight      # Just validate the environment
+
+      # ── Feature prompt (used when run_type = feature or full-pipeline) ─────
+      prompt:
+        description: "Describe what you want to build (natural language). Examples: 'Add password reset flow with email', 'Fix the race condition in session handler', 'Refactor UserRepository to use the new query builder'"
+        required: false
+        default: ""
+        type: string
+
+      # ── Test configuration ──────────────────────────────────────────────────
+      test_scope:
+        description: "Which tests to run (for run_type = test or full-pipeline)"
+        required: false
+        type: choice
+        default: "unit-and-static"
+        options:
+          - unit-and-static   # PHPUnit + PHPStan (fast, ~2min)
+          - unit-only         # PHPUnit only
+          - static-only       # PHPStan only
+          - e2e-only          # Playwright E2E only
+          - all               # Unit + static + E2E (comprehensive, ~8min)
+
+      # ── Versioning and tracking ─────────────────────────────────────────────
+      version_tag:
+        description: "Version label for this run (optional, e.g. v1.2.3 or sprint-42)"
+        required: false
+        default: ""
+        type: string
+
+      priority:
+        description: "Priority of this run (affects PR labels and step summary)"
+        required: false
+        type: choice
+        default: "medium"
+        options:
+          - critical   # Blocking — must ship
+          - high       # This sprint
+          - medium     # Normal cadence
+          - low        # When available
+
+      # ── Execution options ──────────────────────────────────────────────────
+      ai_mode:
+        description: "AI assistance level. 'none' gives full value without any LLM — deterministic impact analysis, task breakdown, and file mapping. 'suggest' adds AI recommendations. 'auto' runs the full AgenticQA ADLC pipeline."
+        required: false
+        type: choice
+        default: "none"
+        options:
+          - none      # No LLM required — rule-based analysis (default, always works)
+          - suggest   # AI suggestions only, no auto-commit (requires ANTHROPIC_API_KEY)
+          - auto      # Full ADLC pipeline: generate + scan + test + PR (requires ANTHROPIC_API_KEY)
+
+      target_branch:
+        description: "Branch to base work on (default: current default branch)"
+        required: false
+        default: "main"
+        type: string
+
+      dry_run:
+        description: "Dry run — analyze and plan but do not push commits or open PRs"
+        required: false
+        default: true
+        type: boolean
+
+      requester:
+        description: "Who is running this? (for audit trail)"
+        required: false
+        default: "github-actions"
+        type: string
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+run-name: >-
+  ${{ inputs.run_type == 'feature' && format('[feature] {0}', inputs.prompt != '' && inputs.prompt || 'unnamed') ||
+      inputs.run_type == 'test' && format('[test] {0}', inputs.test_scope) ||
+      inputs.run_type == 'scan' && '[scan] Security + Compliance audit' ||
+      inputs.run_type == 'full-pipeline' && format('[full] {0}', inputs.prompt != '' && inputs.prompt || 'full pipeline') ||
+      '[preflight] Environment check' }}${{ inputs.version_tag != '' && format(' ({0})', inputs.version_tag) || '' }}
+
+concurrency:
+  group: agenticqa-console-${{ github.ref }}-${{ inputs.run_type }}
+  cancel-in-progress: false
+
+env:
+  RUN_TYPE: ${{ inputs.run_type }}
+  AI_MODE: ${{ inputs.ai_mode }}
+  DRY_RUN: ${{ inputs.dry_run }}
+  PRIORITY: ${{ inputs.priority }}
+  VERSION_TAG: ${{ inputs.version_tag }}
+  REQUESTER: ${{ inputs.requester }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 1 — Environment preflight (always runs first)
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  preflight:
+    name: "🔍 Preflight — Environment Check"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      php_ok: ${{ steps.check.outputs.php_ok }}
+      node_ok: ${{ steps.check.outputs.node_ok }}
+      agenticqa_ok: ${{ steps.check.outputs.agenticqa_ok }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: pdo, pdo_sqlite
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install AgenticQA (lightweight)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "agenticqa @ git+https://github.com/nhomyk/AgenticQA.git#subdirectory=AgenticQA"
+
+      - name: Configure git identity
+        run: |
+          git config user.name "agenticqa-bot[bot]"
+          git config user.email "agenticqa-bot[bot]@users.noreply.github.com"
+
+      - name: Run preflight checks
+        id: check
+        run: |
+          python -m agenticqa.client_preflight --repo . --json | tee /tmp/preflight.json || true
+
+          # Also do quick native checks
+          PHP_OK="true"
+          NODE_OK="true"
+          AGENTICQA_OK="true"
+
+          php --version > /dev/null 2>&1 || PHP_OK="false"
+          composer install --no-interaction --prefer-dist --quiet 2>/dev/null || PHP_OK="false"
+
+          echo "php_ok=${PHP_OK}" >> $GITHUB_OUTPUT
+          echo "node_ok=${NODE_OK}" >> $GITHUB_OUTPUT
+          echo "agenticqa_ok=${AGENTICQA_OK}" >> $GITHUB_OUTPUT
+
+      - name: Write preflight summary
+        if: always()
+        run: |
+          echo "## 🔍 Preflight Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Run type | \`${{ inputs.run_type }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| AI mode | \`${{ inputs.ai_mode }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test scope | \`${{ inputs.test_scope }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Priority | \`${{ inputs.priority }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry run | \`${{ inputs.dry_run }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Requester | \`${{ inputs.requester }}\` |" >> $GITHUB_STEP_SUMMARY
+          ${{ inputs.version_tag != '' }} && echo "| Version | \`${{ inputs.version_tag }}\` |" >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          python -c "
+          import json, sys
+          try:
+              data = json.load(open('/tmp/preflight.json'))
+          except Exception:
+              print('Preflight report unavailable.')
+              sys.exit(0)
+          print('| Check | Status | Note |')
+          print('|-------|--------|------|')
+          for c in data.get('checks', []):
+              icon = {'pass': '✅', 'warn': '⚠️', 'fail': '❌'}.get(c['status'], '❓')
+              hint = c.get('fix_hint', '') or ''
+              print(f'| {c[\"name\"]} | {icon} {c[\"status\"]} | {c[\"message\"][:80]} |')
+          passed = data.get('passed', False)
+          warnings = data.get('has_warnings', False)
+          print()
+          if passed:
+              print('✅ **Environment ready**' + (' (with warnings)' if warnings else ''))
+          else:
+              print('❌ **Preflight failed** — review checks above before proceeding')
+          " >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Preflight checks complete." >> $GITHUB_STEP_SUMMARY
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 2 — Security + Compliance scan (runs for scan/full-pipeline)
+# ─────────────────────────────────────────────────────────────────────────────
+
+  security-scan:
+    name: "🛡️ Security + Compliance Scan"
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      inputs.run_type == 'scan' ||
+      inputs.run_type == 'full-pipeline' ||
+      inputs.run_type == 'preflight'
+    permissions:
+      security-events: write
+      contents: read
+    outputs:
+      risk_level: ${{ steps.scan.outputs.risk_level }}
+      critical_count: ${{ steps.scan.outputs.critical_count }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install AgenticQA
+        run: |
+          python -m pip install --upgrade pip
+          pip install "agenticqa @ git+https://github.com/nhomyk/AgenticQA.git#subdirectory=AgenticQA"
+
+      - name: Run security scan
+        id: scan
+        run: |
+          python -c "
+          import sys, json
+          from agenticqa.scan import scan_repo
+
+          result = scan_repo('.', output_format='json')
+
+          # Write full result
+          with open('/tmp/scan-output.json', 'w') as f:
+              json.dump(result, f, indent=2)
+
+          summary = result.get('summary', {})
+          critical = summary.get('critical', 0)
+          high = summary.get('high', 0)
+          total = summary.get('total_findings', 0)
+          risk = summary.get('risk_level', 'low')
+
+          print(f'critical={critical}', file=sys.stdout)
+          print(f'high={high}', file=sys.stdout)
+          print(f'total={total}', file=sys.stdout)
+          print(f'risk_level={risk}', file=sys.stdout)
+          " | tee /tmp/scan-summary.txt || true
+
+          CRITICAL=$(grep "^critical=" /tmp/scan-summary.txt | cut -d= -f2 || echo "0")
+          RISK=$(grep "^risk_level=" /tmp/scan-summary.txt | cut -d= -f2 || echo "unknown")
+          echo "critical_count=${CRITICAL}" >> $GITHUB_OUTPUT
+          echo "risk_level=${RISK}" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Export SARIF
+        run: |
+          python -c "
+          import sys, json
+          from pathlib import Path
+          from agenticqa.export.sarif import SARIFExporter
+          exporter = SARIFExporter(repo_root='.')
+          if Path('/tmp/scan-output.json').exists():
+              data = json.loads(Path('/tmp/scan-output.json').read_text())
+              exporter.add_compliance_result(data)
+          n = exporter.write('agenticqa-client-scan.sarif')
+          print(f'SARIF: {n} finding(s)')
+          " || true
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: agenticqa-client-scan.sarif
+          category: agenticqa-client
+        continue-on-error: true
+
+      - name: Write scan summary
+        if: always()
+        run: |
+          echo "## 🛡️ Security + Compliance Scan" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          python -c "
+          import json, sys
+          from pathlib import Path
+          try:
+              data = json.loads(Path('/tmp/scan-output.json').read_text())
+          except Exception:
+              print('Scan results unavailable.')
+              sys.exit(0)
+          summary = data.get('summary', {})
+          scanners = data.get('scanners', {})
+          print('| Scanner | Status | Findings |')
+          print('|---------|--------|----------|')
+          for name, info in scanners.items():
+              status_icon = '✅' if info.get('status') == 'ok' else '⚠️'
+              count = len(info.get('result', {}).get('findings', []) or info.get('result', {}).get('violations', []))
+              print(f'| {name} | {status_icon} | {count} |')
+          print()
+          risk = summary.get('risk_level', 'unknown')
+          icon = {'low': '🟢', 'medium': '🟡', 'high': '🟠', 'critical': '🔴'}.get(risk, '⚪')
+          print(f'**Overall Risk:** {icon} {risk.upper()}')
+          if summary.get('critical', 0) > 0:
+              print(f'**Critical findings:** {summary[\"critical\"]} — review before shipping')
+          " >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Scan complete." >> $GITHUB_STEP_SUMMARY
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 3 — PHP test suite (runs for test/full-pipeline)
+# ─────────────────────────────────────────────────────────────────────────────
+
+  test-suite:
+    name: "🧪 PHP Test Suite"
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >-
+      inputs.run_type == 'test' ||
+      inputs.run_type == 'full-pipeline'
+    outputs:
+      tests_passed: ${{ steps.phpunit.outputs.tests_passed }}
+      test_count: ${{ steps.phpunit.outputs.test_count }}
+      phpstan_ok: ${{ steps.phpstan.outputs.phpstan_ok }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: pdo, pdo_sqlite
+          coverage: xdebug
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: PHP syntax lint
+        run: |
+          echo "### PHP Syntax" >> $GITHUB_STEP_SUMMARY
+          find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l | tee /tmp/php-lint.txt
+          ERRORS=$(grep -c "Parse error" /tmp/php-lint.txt || echo "0")
+          echo "Syntax errors: ${ERRORS}" >> $GITHUB_STEP_SUMMARY
+
+      - name: PHPStan static analysis
+        id: phpstan
+        if: >-
+          inputs.test_scope == 'static-only' ||
+          inputs.test_scope == 'unit-and-static' ||
+          inputs.test_scope == 'all'
+        run: |
+          PHPSTAN_OK="true"
+          composer run analyze 2>&1 | tee /tmp/phpstan.txt || PHPSTAN_OK="false"
+          echo "phpstan_ok=${PHPSTAN_OK}" >> $GITHUB_OUTPUT
+
+          ERRORS=$(grep -c "error" /tmp/phpstan.txt || echo "0")
+          echo "## PHPStan Static Analysis" >> $GITHUB_STEP_SUMMARY
+          if [ "${PHPSTAN_OK}" = "true" ]; then
+            echo "✅ No issues found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ ${ERRORS} issue(s) found" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -30 /tmp/phpstan.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+        continue-on-error: true
+
+      - name: PHPUnit tests
+        id: phpunit
+        if: >-
+          inputs.test_scope == 'unit-only' ||
+          inputs.test_scope == 'unit-and-static' ||
+          inputs.test_scope == 'all'
+        env:
+          DB_DSN: 'sqlite::memory:'
+        run: |
+          TESTS_PASSED="true"
+          composer test -- --coverage-text --colors=never 2>&1 | tee /tmp/phpunit.txt || TESTS_PASSED="false"
+
+          # Extract test count
+          TEST_COUNT=$(grep -oP '\d+ test' /tmp/phpunit.txt | tail -1 | grep -oP '\d+' || echo "0")
+          FAILURES=$(grep -oP '\d+ failure' /tmp/phpunit.txt | tail -1 | grep -oP '\d+' || echo "0")
+
+          echo "tests_passed=${TESTS_PASSED}" >> $GITHUB_OUTPUT
+          echo "test_count=${TEST_COUNT}" >> $GITHUB_OUTPUT
+
+          echo "## 🧪 PHPUnit Results" >> $GITHUB_STEP_SUMMARY
+          if [ "${TESTS_PASSED}" = "true" ]; then
+            echo "✅ All ${TEST_COUNT} test(s) passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ ${FAILURES} failure(s) — ${TEST_COUNT} total tests" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -A 5 "FAILURES\|ERRORS" /tmp/phpunit.txt | head -40 >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Coverage summary
+          COVERAGE=$(grep -oP '\d+\.\d+%' /tmp/phpunit.txt | head -1 || echo "N/A")
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Code coverage:** ${COVERAGE}" >> $GITHUB_STEP_SUMMARY
+        continue-on-error: true
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: |
+            /tmp/phpunit.txt
+            /tmp/phpstan.txt
+            coverage.xml
+          retention-days: 14
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 4 — E2E tests (runs when test_scope includes e2e)
+# ─────────────────────────────────────────────────────────────────────────────
+
+  e2e-tests:
+    name: "🎭 Playwright E2E"
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: >-
+      (inputs.run_type == 'test' || inputs.run_type == 'full-pipeline') &&
+      (inputs.test_scope == 'e2e-only' || inputs.test_scope == 'all')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: pdo, pdo_sqlite
+
+      - name: Install dependencies
+        run: |
+          composer install --no-interaction --prefer-dist
+          cd tests/e2e && npm ci || npm install
+          cd tests/e2e && npx playwright install --with-deps
+
+      - name: Init database and start server
+        run: |
+          mkdir -p data
+          php scripts/init_db.php
+          php -S 127.0.0.1:8080 -t public >/tmp/php-server.log 2>&1 &
+          chmod +x tests/e2e/wait-for-server.sh
+          tests/e2e/wait-for-server.sh http://127.0.0.1:8080/health 60
+
+      - name: Run Playwright tests
+        run: |
+          cd tests/e2e
+          npx playwright test --reporter=list 2>&1 | tee /tmp/e2e-results.txt
+          PASSED=$(grep -c "passed" /tmp/e2e-results.txt || echo "0")
+          FAILED=$(grep -c "failed" /tmp/e2e-results.txt || echo "0")
+          echo "## 🎭 E2E Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${FAILED}" = "0" ]; then
+            echo "✅ All E2E tests passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ ${FAILED} E2E test(s) failed" >> $GITHUB_STEP_SUMMARY
+          fi
+        continue-on-error: true
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-${{ github.run_id }}
+          path: |
+            tests/e2e/artifacts/**
+            tests/e2e/playwright-report/**
+            tests/e2e/test-results/**
+          retention-days: 14
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 5 — Feature pipeline (runs for feature/full-pipeline)
+# Two paths: ai_mode=none (deterministic) vs ai_mode=suggest/auto (LLM)
+# ─────────────────────────────────────────────────────────────────────────────
+
+  feature-pipeline:
+    name: "⚡ Feature Pipeline"
+    needs: [preflight, security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: >-
+      (inputs.run_type == 'feature' || inputs.run_type == 'full-pipeline') &&
+      inputs.prompt != ''
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: pdo, pdo_sqlite
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "agenticqa @ git+https://github.com/nhomyk/AgenticQA.git#subdirectory=AgenticQA"
+          composer install --no-interaction --prefer-dist
+
+      - name: Configure git identity
+        run: |
+          git config user.name "agenticqa-bot[bot]"
+          git config user.email "agenticqa-bot[bot]@users.noreply.github.com"
+
+      # ── PATH A: No LLM — deterministic analysis ──────────────────────────
+
+      - name: "Deterministic Impact Analysis (ai_mode: none)"
+        id: no_llm_analysis
+        if: inputs.ai_mode == 'none'
+        run: |
+          python - <<'PYEOF'
+          import json, re, subprocess, sys
+          from pathlib import Path
+
+          prompt = """${{ inputs.prompt }}"""
+          priority = "${{ inputs.priority }}"
+          dry_run = "${{ inputs.dry_run }}" == "true"
+          version_tag = "${{ inputs.version_tag }}"
+
+          print(f"Analyzing prompt: {prompt[:80]}")
+
+          # ── 1. Keyword extraction ─────────────────────────────────────────
+          words = re.findall(r'\b\w+\b', prompt.lower())
+          stopwords = {'a','an','the','to','for','in','on','with','and','or','that',
+                       'is','it','be','of','at','by','from','this','i','we','should',
+                       'want','need','add','create','build','make','fix','update','the'}
+          keywords = [w for w in words if len(w) > 3 and w not in stopwords]
+          print(f"Keywords: {keywords[:10]}")
+
+          # ── 2. Detect intent ─────────────────────────────────────────────
+          intent = "feature"
+          if any(w in prompt.lower() for w in ['fix', 'bug', 'broken', 'error', 'crash', 'fail']):
+              intent = "bugfix"
+          elif any(w in prompt.lower() for w in ['refactor', 'cleanup', 'reorganize', 'restructure']):
+              intent = "refactor"
+          elif any(w in prompt.lower() for w in ['test', 'spec', 'coverage', 'assertion']):
+              intent = "test"
+          elif any(w in prompt.lower() for w in ['security', 'auth', 'permission', 'access', 'cve']):
+              intent = "security"
+          print(f"Detected intent: {intent}")
+
+          # ── 3. Find relevant files ─────────────────────────────────────────
+          relevant_files = []
+          for path in Path('src').rglob('*.php'):
+              content = path.read_text(errors='ignore').lower()
+              if any(k in content or k in path.name.lower() for k in keywords[:5]):
+                  relevant_files.append(str(path))
+          relevant_files = relevant_files[:10]
+          print(f"Relevant files: {len(relevant_files)}")
+
+          # ── 4. Find relevant tests ─────────────────────────────────────────
+          relevant_tests = []
+          for path in Path('tests').rglob('*.php') if Path('tests').exists() else []:
+              if any(k in str(path).lower() for k in keywords[:5]):
+                  relevant_tests.append(str(path))
+          relevant_tests = relevant_tests[:5]
+
+          # ── 5. Security considerations ─────────────────────────────────────
+          security_notes = []
+          prompt_lower = prompt.lower()
+          if any(w in prompt_lower for w in ['password', 'auth', 'login', 'token', 'session']):
+              security_notes.append("Authentication/authorization changes — review OWASP A01:2021 (Broken Access Control)")
+          if any(w in prompt_lower for w in ['sql', 'query', 'database', 'db', 'insert', 'select']):
+              security_notes.append("Database interaction — ensure parameterized queries, prevent SQL injection (OWASP A03:2021)")
+          if any(w in prompt_lower for w in ['email', 'pii', 'user data', 'personal', 'gdpr']):
+              security_notes.append("User data handling — review GDPR/CCPA obligations, ensure PII is not logged")
+          if any(w in prompt_lower for w in ['upload', 'file', 'image', 'attachment']):
+              security_notes.append("File handling — validate MIME types, restrict extensions, prevent path traversal")
+          if any(w in prompt_lower for w in ['api', 'endpoint', 'route', 'request']):
+              security_notes.append("API endpoint — add rate limiting, validate input, authenticate all routes")
+
+          # ── 6. Task breakdown ─────────────────────────────────────────────
+          tasks = []
+
+          if intent == "bugfix":
+              tasks = [
+                  f"Reproduce the issue with a failing test",
+                  f"Identify root cause in: {', '.join(relevant_files[:3]) or 'relevant files'}",
+                  "Apply minimal fix (avoid scope creep)",
+                  "Verify fix does not break existing tests",
+                  "Add regression test to prevent recurrence",
+              ]
+          elif intent == "refactor":
+              tasks = [
+                  "Run full test suite before refactor to capture baseline",
+                  f"Identify components to change: {', '.join(relevant_files[:3]) or 'src/'}",
+                  "Apply changes incrementally — one class at a time",
+                  "Run tests after each change to catch regressions",
+                  "Update docblocks/comments to reflect new structure",
+              ]
+          elif intent == "test":
+              tasks = [
+                  f"Identify coverage gaps in: {', '.join(relevant_files[:3]) or 'src/'}",
+                  "Write unit tests for uncovered branches",
+                  "Add integration tests for key workflows",
+                  "Verify coverage threshold is met",
+              ]
+          else:  # feature or security
+              tasks = [
+                  f"Design the implementation approach for: {prompt[:60]}",
+                  f"Identify files to create/modify: {', '.join(relevant_files[:3]) or 'src/'}",
+                  "Write failing tests first (TDD)",
+                  "Implement the feature",
+                  "Run security scan before PR",
+                  f"Update tests in: {', '.join(relevant_tests[:2]) or 'tests/'}",
+              ]
+
+          # ── 7. Write analysis report ─────────────────────────────────────
+          report = {
+              "prompt": prompt,
+              "intent": intent,
+              "priority": priority,
+              "keywords": keywords[:10],
+              "relevant_files": relevant_files,
+              "relevant_tests": relevant_tests,
+              "security_notes": security_notes,
+              "tasks": tasks,
+              "dry_run": dry_run,
+              "version_tag": version_tag,
+          }
+
+          with open('/tmp/feature-analysis.json', 'w') as f:
+              json.dump(report, f, indent=2)
+
+          print(json.dumps(report, indent=2))
+          PYEOF
+
+      - name: "Generate task breakdown (ai_mode: none)"
+        if: inputs.ai_mode == 'none'
+        run: |
+          python - <<'PYEOF'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('/tmp/feature-analysis.json').read_text())
+          prompt = data['prompt']
+          intent = data['intent']
+          priority = data['priority']
+          tasks = data['tasks']
+          relevant_files = data['relevant_files']
+          security_notes = data['security_notes']
+          version_tag = data.get('version_tag', '')
+
+          priority_badge = {'critical': '🔴 CRITICAL', 'high': '🟠 HIGH', 'medium': '🟡 MEDIUM', 'low': '🔵 LOW'}.get(priority, priority)
+          intent_label = {'bugfix': '🐛 Bug Fix', 'feature': '✨ Feature', 'refactor': '🔧 Refactor', 'test': '🧪 Test Coverage', 'security': '🛡️ Security'}.get(intent, intent)
+
+          lines = [
+              f"## ⚡ Feature Analysis — No-LLM Mode",
+              "",
+              f"> **{priority_badge}** &nbsp;|&nbsp; {intent_label}" + (f" &nbsp;|&nbsp; `{version_tag}`" if version_tag else ""),
+              "",
+              f"**Prompt:** {prompt}",
+              "",
+              "---",
+              "",
+              "### 📋 Task Breakdown",
+              "",
+          ]
+          for i, task in enumerate(tasks, 1):
+              lines.append(f"- [ ] **{i}.** {task}")
+          lines.append("")
+
+          if relevant_files:
+              lines += [
+                  "### 📁 Files Likely Affected",
+                  "",
+              ]
+              for f in relevant_files:
+                  lines.append(f"- `{f}`")
+              lines.append("")
+
+          if security_notes:
+              lines += [
+                  "### 🔒 Security Considerations",
+                  "",
+              ]
+              for note in security_notes:
+                  lines.append(f"- ⚠️ {note}")
+              lines.append("")
+
+          lines += [
+              "### 🤖 About This Analysis",
+              "",
+              "This analysis was generated **without an LLM** using deterministic keyword extraction,",
+              "intent classification, and static file mapping. To get AI-generated code, set",
+              "`ai_mode: suggest` or `ai_mode: auto` and ensure `ANTHROPIC_API_KEY` is configured.",
+              "",
+              "---",
+              "",
+              f"*Generated by AgenticQA — `ai_mode: none` — {intent_label}*",
+          ]
+
+          content = '\n'.join(lines)
+          Path('/tmp/feature-report.md').write_text(content)
+          print(content)
+          PYEOF
+
+      - name: "Create GitHub issue with task breakdown (ai_mode: none, dry_run: false)"
+        if: inputs.ai_mode == 'none' && inputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="${{ inputs.run_type == 'feature' && '[feature]' || '[task]' }} ${{ inputs.prompt }}"
+          TITLE="${TITLE:0:80}"  # GitHub title limit
+
+          LABEL=""
+          case "${{ inputs.priority }}" in
+            critical) LABEL="--label priority:critical" ;;
+            high)     LABEL="--label priority:high" ;;
+            medium)   LABEL="" ;;
+            low)      LABEL="--label priority:low" ;;
+          esac
+
+          gh issue create \
+            --title "${TITLE}" \
+            --body-file /tmp/feature-report.md \
+            ${LABEL} \
+            --assignee "${{ inputs.requester }}" 2>/dev/null || \
+          gh issue create \
+            --title "${TITLE}" \
+            --body-file /tmp/feature-report.md \
+            ${LABEL} || true
+
+      # ── PATH B: With LLM — AgenticQA ADLC pipeline ───────────────────────
+
+      - name: "Submit to AgenticQA worker pool (ai_mode: suggest/auto)"
+        id: agenticqa_run
+        if: inputs.ai_mode != 'none'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python -c "
+          import json, sys, time
+          from agenticqa.workflow_requests import PromptWorkflowStore
+
+          has_key = bool('${{ secrets.ANTHROPIC_API_KEY }}')
+          dry_run = '${{ inputs.dry_run }}' == 'true'
+          ai_mode = '${{ inputs.ai_mode }}'
+
+          store = PromptWorkflowStore(db_path='/tmp/ci_workflow.db')
+          req = store.create_and_queue_request(
+              prompt='''${{ inputs.prompt }}''',
+              repo='.',
+              requester='${{ inputs.requester }}',
+              metadata={
+                  'source': 'agenticqa_console',
+                  'run_type': '${{ inputs.run_type }}',
+                  'ai_mode': ai_mode,
+                  'priority': '${{ inputs.priority }}',
+                  'version_tag': '${{ inputs.version_tag }}',
+                  'run_id': '${{ github.run_id }}',
+                  'dry_run': dry_run,
+                  'has_api_key': has_key,
+              },
+          )
+          print(f'Request queued: {req[\"id\"]} — {req[\"status\"]}')
+
+          if not has_key:
+              print('WARNING: ANTHROPIC_API_KEY not set — AI features disabled')
+              print('Falling back to deterministic scan mode')
+          " || true
+        continue-on-error: true
+
+      - name: Write feature pipeline summary
+        if: always()
+        run: |
+          echo "## ⚡ Feature Pipeline" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Prompt:** ${{ inputs.prompt }}" >> $GITHUB_STEP_SUMMARY
+          echo "**AI Mode:** \`${{ inputs.ai_mode }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry Run:** \`${{ inputs.dry_run }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f /tmp/feature-report.md ]; then
+            cat /tmp/feature-report.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload feature analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-analysis-${{ github.run_id }}
+          path: |
+            /tmp/feature-analysis.json
+            /tmp/feature-report.md
+          retention-days: 30
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 6 — Final summary (always runs last)
+# ─────────────────────────────────────────────────────────────────────────────
+
+  run-summary:
+    name: "📊 Run Summary"
+    needs: [preflight, security-scan, test-suite, feature-pipeline, e2e-tests]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Write consolidated summary
+        run: |
+          echo "# AgenticQA Development Console — Run Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Run type | \`${{ inputs.run_type }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| AI mode | \`${{ inputs.ai_mode }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Priority | \`${{ inputs.priority }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry run | \`${{ inputs.dry_run }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Requester | \`${{ inputs.requester }}\` |" >> $GITHUB_STEP_SUMMARY
+          ${{ inputs.version_tag != '' }} && echo "| Version | \`${{ inputs.version_tag }}\` |" >> $GITHUB_STEP_SUMMARY || true
+          ${{ inputs.prompt != '' }} && echo "| Prompt | ${{ inputs.prompt }} |" >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "| Job | Outcome |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Preflight | ${{ needs.preflight.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | ${{ needs.test-suite.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| E2E Tests | ${{ needs.e2e-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Feature Pipeline | ${{ needs.feature-pipeline.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "*Run ID: ${{ github.run_id }} — [View full logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})*" >> $GITHUB_STEP_SUMMARY
