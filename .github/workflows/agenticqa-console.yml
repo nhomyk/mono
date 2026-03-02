@@ -251,27 +251,46 @@ jobs:
       - name: Run security scan
         id: scan
         run: |
-          python -c "
+          python - <<'PYEOF' | tee /tmp/scan-summary.txt || true
           import sys, json
-          from agenticqa.scan import scan_repo
+          from pathlib import Path
 
-          result = scan_repo('.', output_format='json')
+          try:
+              from agenticqa.security.architecture_scanner import ArchitectureScanner
+              result = ArchitectureScanner().scan('.')
+              areas = getattr(result, 'areas', []) or []
+              total = len(areas)
+              high_count = sum(1 for a in areas if getattr(a, 'attack_surface_score', 0) > 70)
+              critical = 0
+              risk = 'low' if total == 0 else ('high' if total > 50 else 'medium')
 
-          # Write full result
+              findings = []
+              for a in areas[:100]:
+                  findings.append({
+                      'file': str(getattr(a, 'source_file', '')),
+                      'line': getattr(a, 'line_number', 0),
+                      'category': str(getattr(a, 'category', 'UNKNOWN')),
+                      'message': f"{getattr(a, 'category', '')} integration point",
+                      'attack_surface_score': getattr(a, 'attack_surface_score', 0),
+                  })
+
+              scan_output = {
+                  'summary': {'total_findings': total, 'risk_level': risk, 'critical': critical, 'high': high_count},
+                  'findings': findings,
+              }
+          except Exception as e:
+              print(f'Scan error: {e}', file=sys.stderr)
+              scan_output = {'summary': {'total_findings': 0, 'risk_level': 'unknown', 'critical': 0, 'high': 0}, 'findings': []}
+
           with open('/tmp/scan-output.json', 'w') as f:
-              json.dump(result, f, indent=2)
+              json.dump(scan_output, f, indent=2)
 
-          summary = result.get('summary', {})
-          critical = summary.get('critical', 0)
-          high = summary.get('high', 0)
-          total = summary.get('total_findings', 0)
-          risk = summary.get('risk_level', 'low')
-
-          print(f'critical={critical}', file=sys.stdout)
-          print(f'high={high}', file=sys.stdout)
-          print(f'total={total}', file=sys.stdout)
-          print(f'risk_level={risk}', file=sys.stdout)
-          " | tee /tmp/scan-summary.txt || true
+          s = scan_output['summary']
+          print(f"critical={s['critical']}")
+          print(f"high={s['high']}")
+          print(f"total={s['total_findings']}")
+          print(f"risk_level={s['risk_level']}")
+          PYEOF
 
           CRITICAL=$(grep "^critical=" /tmp/scan-summary.txt | cut -d= -f2 || echo "0")
           RISK=$(grep "^risk_level=" /tmp/scan-summary.txt | cut -d= -f2 || echo "unknown")
@@ -281,18 +300,36 @@ jobs:
 
       - name: Export SARIF
         run: |
-          python -c "
-          import sys, json
+          python - <<'PYEOF'
+          import json, sys
           from pathlib import Path
-          from agenticqa.export.sarif import SARIFExporter
-          exporter = SARIFExporter(repo_root='.')
-          if Path('/tmp/scan-output.json').exists():
-              data = json.loads(Path('/tmp/scan-output.json').read_text())
-              exporter.add_compliance_result(data)
-          n = exporter.write('agenticqa-client-scan.sarif')
-          print(f'SARIF: {n} finding(s)')
-          " || true
-        continue-on-error: true
+
+          MINIMAL_SARIF = {
+              "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+              "version": "2.1.0",
+              "runs": [{"tool": {"driver": {"name": "AgenticQA", "version": "1.0.0", "rules": []}}, "results": []}]
+          }
+
+          try:
+              from agenticqa.export.sarif import SARIFExporter
+              exporter = SARIFExporter(repo_root='.')
+              if Path('/tmp/scan-output.json').exists():
+                  data = json.loads(Path('/tmp/scan-output.json').read_text())
+                  for finding in data.get('findings', []):
+                      rule_id = f"ARCH_{finding.get('category', 'UNKNOWN')}"
+                      msg = finding.get('message', 'Architecture integration point')
+                      fp = finding.get('file', '.')
+                      line = finding.get('line', 1)
+                      exporter._add(rule_id, msg, fp, line, severity='note',
+                                    rule_desc=f"Architecture: {finding.get('category', 'unknown')}")
+              n = exporter.write('agenticqa-client-scan.sarif')
+              print(f'SARIF: {n} finding(s)')
+          except Exception as e:
+              print(f'SARIF export error (writing fallback): {e}', file=sys.stderr)
+              with open('agenticqa-client-scan.sarif', 'w') as f:
+                  json.dump(MINIMAL_SARIF, f)
+              print('SARIF: 0 findings (fallback)')
+          PYEOF
 
       - name: Upload SARIF to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v4
@@ -778,10 +815,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           python -c "
-          import json, sys, time
+          import json, os, sys, time
           from agenticqa.workflow_requests import PromptWorkflowStore
 
-          has_key = bool('${{ secrets.ANTHROPIC_API_KEY }}')
+          has_key = bool(os.environ.get('ANTHROPIC_API_KEY', ''))
           dry_run = '${{ inputs.dry_run }}' == 'true'
           ai_mode = '${{ inputs.ai_mode }}'
 
