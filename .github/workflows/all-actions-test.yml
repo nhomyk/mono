@@ -1,0 +1,86 @@
+name: All AgenticQA Actions Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  test-all-actions:
+    name: Test all 3 AgenticQA actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 1. MCP Security Scan ───────────────────────────────────────────────
+      - name: MCP Security Scan
+        id: mcp
+        uses: nhomyk/mcp-scan-action@v1
+        with:
+          fail-on-critical: 'false'
+          sarif-output: 'mcp-results.sarif'
+          upload-sarif: 'false'
+
+      - name: Assert MCP outputs
+        run: |
+          echo "MCP risk-level:     ${{ steps.mcp.outputs.risk-level }}"
+          echo "MCP findings-count: ${{ steps.mcp.outputs.findings-count }}"
+          echo "MCP critical-count: ${{ steps.mcp.outputs.critical-count }}"
+          [ -f mcp-results.sarif ] && echo "PASS: mcp-results.sarif exists" || (echo "FAIL: mcp-results.sarif missing" && exit 1)
+          [ -n "${{ steps.mcp.outputs.risk-level }}" ] && echo "PASS: risk-level set" || (echo "FAIL: risk-level empty" && exit 1)
+
+      # ── 2. EU AI Act Compliance ────────────────────────────────────────────
+      - name: EU AI Act Compliance Check
+        id: euaiact
+        uses: nhomyk/eu-ai-act-check-action@v1
+        with:
+          fail-on-noncompliant: 'false'
+          sarif-output: 'eu-ai-act-results.sarif'
+          upload-sarif: 'false'
+
+      - name: Assert EU AI Act outputs
+        run: |
+          echo "EU AI Act risk-category:    ${{ steps.euaiact.outputs.risk-category }}"
+          echo "EU AI Act conformity-score: ${{ steps.euaiact.outputs.conformity-score }}"
+          echo "EU AI Act critical-count:   ${{ steps.euaiact.outputs.critical-count }}"
+          [ -f eu-ai-act-results.sarif ] && echo "PASS: eu-ai-act-results.sarif exists" || (echo "FAIL: eu-ai-act-results.sarif missing" && exit 1)
+          [ -n "${{ steps.euaiact.outputs.risk-category }}" ] && echo "PASS: risk-category set" || (echo "FAIL: risk-category empty" && exit 1)
+
+      # ── 3. Architecture Scan ──────────────────────────────────────────────
+      - name: AgenticQA Architecture Scan
+        id: arch
+        uses: nhomyk/agenticqa-scan-action@v1
+        with:
+          fail-on-critical: 'false'
+          sarif-output: 'arch-results.sarif'
+          upload-sarif: 'false'
+
+      - name: Assert Architecture Scan outputs
+        run: |
+          echo "Arch findings-count:       ${{ steps.arch.outputs.findings-count }}"
+          echo "Arch critical-count:       ${{ steps.arch.outputs.critical-count }}"
+          echo "Arch attack-surface-score: ${{ steps.arch.outputs.attack-surface-score }}"
+          echo "Arch test-coverage:        ${{ steps.arch.outputs.test-coverage }}"
+          [ -f arch-results.sarif ] && echo "PASS: arch-results.sarif exists" || (echo "FAIL: arch-results.sarif missing" && exit 1)
+          [ -n "${{ steps.arch.outputs.attack-surface-score }}" ] && echo "PASS: attack-surface-score set" || (echo "FAIL: attack-surface-score empty" && exit 1)
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Print combined summary
+        if: always()
+        run: |
+          echo "============================================"
+          echo "  AgenticQA Actions Test Summary"
+          echo "============================================"
+          echo "  MCP Security:    risk=${{ steps.mcp.outputs.risk-level }}  findings=${{ steps.mcp.outputs.findings-count }}  critical=${{ steps.mcp.outputs.critical-count }}"
+          echo "  EU AI Act:       risk=${{ steps.euaiact.outputs.risk-category }}  score=${{ steps.euaiact.outputs.conformity-score }}  critical=${{ steps.euaiact.outputs.critical-count }}"
+          echo "  Architecture:    score=${{ steps.arch.outputs.attack-surface-score }}/100  findings=${{ steps.arch.outputs.findings-count }}  critical=${{ steps.arch.outputs.critical-count }}"
+          echo "============================================"
