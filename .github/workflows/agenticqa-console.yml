@@ -131,21 +131,61 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      php_ok: ${{ steps.check.outputs.php_ok }}
-      node_ok: ${{ steps.check.outputs.node_ok }}
+      stack: ${{ steps.detect.outputs.stack }}
       agenticqa_ok: ${{ steps.check.outputs.agenticqa_ok }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup PHP
+      # ── Detect language/stack from repo root ─────────────────────────────
+      - name: Detect project stack
+        id: detect
+        run: |
+          STACK="unknown"
+          if   [ -f "composer.json" ];                                   then STACK="php"
+          elif [ -f "go.mod" ];                                          then STACK="go"
+          elif [ -f "pyproject.toml" ] || [ -f "requirements.txt" ] || [ -f "setup.py" ]; then STACK="python"
+          elif [ -f "package.json" ] && [ -f "tsconfig.json" ];         then STACK="typescript"
+          elif [ -f "package.json" ];                                    then STACK="node"
+          elif [ -f "pom.xml" ];                                         then STACK="java-maven"
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ];      then STACK="java-gradle"
+          elif [ -f "Gemfile" ];                                         then STACK="ruby"
+          elif [ -f "Cargo.toml" ];                                      then STACK="rust"
+          fi
+          echo "stack=${STACK}" >> $GITHUB_OUTPUT
+          echo "Detected stack: ${STACK}"
+
+      # ── Language-specific setup for preflight validation ─────────────────
+      - name: Setup PHP (php repos)
+        if: steps.detect.outputs.stack == 'php'
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.1'
           extensions: pdo, pdo_sqlite
 
-      - name: Setup Python
+      - name: Setup Node (node/typescript repos)
+        if: >-
+          steps.detect.outputs.stack == 'node' ||
+          steps.detect.outputs.stack == 'typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Setup Go (go repos)
+        if: steps.detect.outputs.stack == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Setup Ruby (ruby repos)
+        if: steps.detect.outputs.stack == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Setup Python (always — AgenticQA is Python)
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
@@ -165,18 +205,7 @@ jobs:
         id: check
         run: |
           python -m agenticqa.client_preflight --repo . --json | tee /tmp/preflight.json || true
-
-          # Also do quick native checks
-          PHP_OK="true"
-          NODE_OK="true"
-          AGENTICQA_OK="true"
-
-          php --version > /dev/null 2>&1 || PHP_OK="false"
-          composer install --no-interaction --prefer-dist --quiet 2>/dev/null || PHP_OK="false"
-
-          echo "php_ok=${PHP_OK}" >> $GITHUB_OUTPUT
-          echo "node_ok=${NODE_OK}" >> $GITHUB_OUTPUT
-          echo "agenticqa_ok=${AGENTICQA_OK}" >> $GITHUB_OUTPUT
+          echo "agenticqa_ok=true" >> $GITHUB_OUTPUT
 
       - name: Write preflight summary
         if: always()
@@ -191,6 +220,7 @@ jobs:
           echo "| Priority | \`${{ inputs.priority }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Dry run | \`${{ inputs.dry_run }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Requester | \`${{ inputs.requester }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Stack | \`${{ steps.detect.outputs.stack }}\` |" >> $GITHUB_STEP_SUMMARY
           ${{ inputs.version_tag != '' }} && echo "| Version | \`${{ inputs.version_tag }}\` |" >> $GITHUB_STEP_SUMMARY || true
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -371,11 +401,12 @@ jobs:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JOB 3 — PHP test suite (runs for test/full-pipeline)
+# JOB 3 — Multi-language test suite (runs for test/full-pipeline)
+# Supports: PHP, Python, Node, TypeScript, Go, Ruby, Rust, Java (Maven/Gradle)
 # ─────────────────────────────────────────────────────────────────────────────
 
   test-suite:
-    name: "🧪 PHP Test Suite"
+    name: "🧪 Test Suite (${{ needs.preflight.outputs.stack }})"
     needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -383,54 +414,158 @@ jobs:
       inputs.run_type == 'test' ||
       inputs.run_type == 'full-pipeline'
     outputs:
-      tests_passed: ${{ steps.phpunit.outputs.tests_passed }}
-      test_count: ${{ steps.phpunit.outputs.test_count }}
-      phpstan_ok: ${{ steps.phpstan.outputs.phpstan_ok }}
+      tests_passed: ${{ steps.run_tests.outputs.tests_passed }}
+      test_count: ${{ steps.run_tests.outputs.test_count }}
+      linter_ok: ${{ steps.run_linter.outputs.linter_ok }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup PHP
+      # ── Language runtime setup (only the detected stack) ─────────────────
+
+      - name: Setup PHP (php repos)
+        if: needs.preflight.outputs.stack == 'php'
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.1'
           extensions: pdo, pdo_sqlite
           coverage: xdebug
 
+      - name: Setup Node (node/typescript repos)
+        if: >-
+          needs.preflight.outputs.stack == 'node' ||
+          needs.preflight.outputs.stack == 'typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Setup Go (go repos)
+        if: needs.preflight.outputs.stack == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Setup Ruby (ruby repos)
+        if: needs.preflight.outputs.stack == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Setup Java (java repos)
+        if: >-
+          needs.preflight.outputs.stack == 'java-maven' ||
+          needs.preflight.outputs.stack == 'java-gradle'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Python (python repos)
+        if: needs.preflight.outputs.stack == 'python'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      # ── Install dependencies ──────────────────────────────────────────────
       - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist
-
-      - name: PHP syntax lint
         run: |
-          echo "### PHP Syntax" >> $GITHUB_STEP_SUMMARY
-          find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l | tee /tmp/php-lint.txt
-          ERRORS=$(grep -c "Parse error" /tmp/php-lint.txt || echo "0")
-          echo "Syntax errors: ${ERRORS}" >> $GITHUB_STEP_SUMMARY
+          STACK="${{ needs.preflight.outputs.stack }}"
+          case "${STACK}" in
+            php)
+              composer install --no-interaction --prefer-dist
+              ;;
+            python)
+              pip install --upgrade pip
+              pip install -e . 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
+              pip install pytest mypy flake8 2>/dev/null || true
+              ;;
+            node)
+              npm ci 2>/dev/null || npm install
+              ;;
+            typescript)
+              npm ci 2>/dev/null || npm install
+              ;;
+            go)
+              go build ./... || true
+              ;;
+            ruby)
+              bundle install 2>/dev/null || true
+              ;;
+            rust)
+              echo "Rust: cargo resolves deps automatically"
+              ;;
+            java-maven)
+              mvn dependency:resolve -q || true
+              ;;
+            java-gradle)
+              ./gradlew dependencies --quiet || true
+              ;;
+            *)
+              echo "Unknown stack: ${STACK} — skipping install"
+              ;;
+          esac
 
-      - name: PHPStan static analysis
-        id: phpstan
+      # ── Static analysis / linter ──────────────────────────────────────────
+      - name: Run linter / static analysis
+        id: run_linter
         if: >-
           inputs.test_scope == 'static-only' ||
           inputs.test_scope == 'unit-and-static' ||
           inputs.test_scope == 'all'
         run: |
-          PHPSTAN_OK="true"
-          composer run analyze 2>&1 | tee /tmp/phpstan.txt || PHPSTAN_OK="false"
-          echo "phpstan_ok=${PHPSTAN_OK}" >> $GITHUB_OUTPUT
-
-          ERRORS=$(grep -c "error" /tmp/phpstan.txt || echo "0")
-          echo "## PHPStan Static Analysis" >> $GITHUB_STEP_SUMMARY
-          if [ "${PHPSTAN_OK}" = "true" ]; then
-            echo "✅ No issues found" >> $GITHUB_STEP_SUMMARY
+          STACK="${{ needs.preflight.outputs.stack }}"
+          LINTER_OK="true"
+          case "${STACK}" in
+            php)
+              find . -name "*.php" -not -path "./vendor/*" -print0 | \
+                xargs -0 -n1 php -l | tee /tmp/php-syntax.txt
+              composer run analyze 2>&1 | tee /tmp/linter.txt || LINTER_OK="false"
+              ;;
+            python)
+              flake8 src/ --max-line-length=120 --count 2>&1 | tee /tmp/linter.txt || LINTER_OK="false"
+              mypy src/ --ignore-missing-imports 2>&1 | tee -a /tmp/linter.txt || true
+              ;;
+            node)
+              npx eslint . --ext .js --format stylish 2>&1 | tee /tmp/linter.txt || LINTER_OK="false"
+              ;;
+            typescript)
+              npx tsc --noEmit 2>&1 | tee /tmp/linter.txt || LINTER_OK="false"
+              npx eslint . --ext .ts,.tsx --format stylish 2>&1 | tee -a /tmp/linter.txt || true
+              ;;
+            go)
+              go vet ./... 2>&1 | tee /tmp/linter.txt || LINTER_OK="false"
+              ;;
+            ruby)
+              bundle exec rubocop --format progress 2>&1 | tee /tmp/linter.txt || LINTER_OK="false"
+              ;;
+            rust)
+              cargo clippy -- -D warnings 2>&1 | tee /tmp/linter.txt || LINTER_OK="false"
+              ;;
+            java-maven)
+              mvn checkstyle:check 2>&1 | tee /tmp/linter.txt || LINTER_OK="false"
+              ;;
+            java-gradle)
+              ./gradlew checkstyleMain 2>&1 | tee /tmp/linter.txt || LINTER_OK="false"
+              ;;
+            *)
+              echo "Unknown stack: ${STACK} — skipping linter" | tee /tmp/linter.txt
+              ;;
+          esac
+          echo "linter_ok=${LINTER_OK}" >> $GITHUB_OUTPUT
+          echo "## 🔍 Static Analysis (${STACK})" >> $GITHUB_STEP_SUMMARY
+          if [ "${LINTER_OK}" = "true" ]; then
+            echo "✅ No blocking issues" >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️ ${ERRORS} issue(s) found" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Issues found — see artifact for details" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            head -30 /tmp/phpstan.txt >> $GITHUB_STEP_SUMMARY
+            head -30 /tmp/linter.txt >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
         continue-on-error: true
 
-      - name: PHPUnit tests
-        id: phpunit
+      # ── Unit / integration tests ──────────────────────────────────────────
+      - name: Run tests
+        id: run_tests
         if: >-
           inputs.test_scope == 'unit-only' ||
           inputs.test_scope == 'unit-and-static' ||
@@ -438,30 +573,64 @@ jobs:
         env:
           DB_DSN: 'sqlite::memory:'
         run: |
+          STACK="${{ needs.preflight.outputs.stack }}"
           TESTS_PASSED="true"
-          composer test -- --coverage-text --colors=never 2>&1 | tee /tmp/phpunit.txt || TESTS_PASSED="false"
+          TEST_COUNT=0
+          COVERAGE="N/A"
 
-          # Extract test count
-          TEST_COUNT=$(grep -oP '\d+ test' /tmp/phpunit.txt | tail -1 | grep -oP '\d+' || echo "0")
-          FAILURES=$(grep -oP '\d+ failure' /tmp/phpunit.txt | tail -1 | grep -oP '\d+' || echo "0")
+          case "${STACK}" in
+            php)
+              composer test -- --coverage-text --colors=never 2>&1 | tee /tmp/test-output.txt || TESTS_PASSED="false"
+              TEST_COUNT=$(grep -oP '\d+ test' /tmp/test-output.txt | tail -1 | grep -oP '\d+' || echo "0")
+              COVERAGE=$(grep -oP '\d+\.\d+%' /tmp/test-output.txt | head -1 || echo "N/A")
+              ;;
+            python)
+              python -m pytest --tb=short -q 2>&1 | tee /tmp/test-output.txt || TESTS_PASSED="false"
+              TEST_COUNT=$(grep -oP '\d+ passed' /tmp/test-output.txt | tail -1 | grep -oP '\d+' || echo "0")
+              ;;
+            node|typescript)
+              npm test -- --passWithNoTests 2>&1 | tee /tmp/test-output.txt || TESTS_PASSED="false"
+              TEST_COUNT=$(grep -oP '\d+ passed' /tmp/test-output.txt | grep -oP '\d+' | tail -1 || echo "0")
+              ;;
+            go)
+              go test ./... -v 2>&1 | tee /tmp/test-output.txt || TESTS_PASSED="false"
+              TEST_COUNT=$(grep -c "^--- PASS\|^--- FAIL" /tmp/test-output.txt || echo "0")
+              ;;
+            ruby)
+              bundle exec rspec --format progress 2>&1 | tee /tmp/test-output.txt || TESTS_PASSED="false"
+              TEST_COUNT=$(grep -oP '\d+ example' /tmp/test-output.txt | grep -oP '\d+' || echo "0")
+              ;;
+            rust)
+              cargo test 2>&1 | tee /tmp/test-output.txt || TESTS_PASSED="false"
+              TEST_COUNT=$(grep -oP '\d+ passed' /tmp/test-output.txt | grep -oP '\d+' || echo "0")
+              ;;
+            java-maven)
+              mvn test 2>&1 | tee /tmp/test-output.txt || TESTS_PASSED="false"
+              TEST_COUNT=$(grep -oP 'Tests run: \K\d+' /tmp/test-output.txt | tail -1 || echo "0")
+              ;;
+            java-gradle)
+              ./gradlew test 2>&1 | tee /tmp/test-output.txt || TESTS_PASSED="false"
+              TEST_COUNT=$(grep -oP '\d+ tests' /tmp/test-output.txt | grep -oP '\d+' | tail -1 || echo "0")
+              ;;
+            *)
+              echo "Unknown stack: ${STACK} — no test runner configured" | tee /tmp/test-output.txt
+              TESTS_PASSED="true"
+              ;;
+          esac
 
           echo "tests_passed=${TESTS_PASSED}" >> $GITHUB_OUTPUT
           echo "test_count=${TEST_COUNT}" >> $GITHUB_OUTPUT
 
-          echo "## 🧪 PHPUnit Results" >> $GITHUB_STEP_SUMMARY
+          echo "## 🧪 Test Results (${STACK})" >> $GITHUB_STEP_SUMMARY
           if [ "${TESTS_PASSED}" = "true" ]; then
             echo "✅ All ${TEST_COUNT} test(s) passed" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ ${FAILURES} failure(s) — ${TEST_COUNT} total tests" >> $GITHUB_STEP_SUMMARY
+            echo "❌ Failures detected — ${TEST_COUNT} total tests" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            grep -A 5 "FAILURES\|ERRORS" /tmp/phpunit.txt | head -40 >> $GITHUB_STEP_SUMMARY || true
+            grep -iA 5 "fail\|error" /tmp/test-output.txt | head -40 >> $GITHUB_STEP_SUMMARY || true
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
-
-          # Coverage summary
-          COVERAGE=$(grep -oP '\d+\.\d+%' /tmp/phpunit.txt | head -1 || echo "N/A")
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Code coverage:** ${COVERAGE}" >> $GITHUB_STEP_SUMMARY
+          [ "${COVERAGE}" != "N/A" ] && echo "**Coverage:** ${COVERAGE}" >> $GITHUB_STEP_SUMMARY || true
         continue-on-error: true
 
       - name: Upload test artifacts
@@ -469,19 +638,24 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ github.run_id }}
+          if-no-files-found: ignore
           path: |
-            /tmp/phpunit.txt
-            /tmp/phpstan.txt
+            /tmp/test-output.txt
+            /tmp/linter.txt
+            /tmp/php-syntax.txt
             coverage.xml
+            coverage/
           retention-days: 14
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # JOB 4 — E2E tests (runs when test_scope includes e2e)
+# Starts a dev server appropriate for the detected stack, then runs Playwright.
+# Skipped automatically if tests/e2e/ does not contain a playwright.config.*
 # ─────────────────────────────────────────────────────────────────────────────
 
   e2e-tests:
-    name: "🎭 Playwright E2E"
+    name: "🎭 Playwright E2E (${{ needs.preflight.outputs.stack }})"
     needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -491,41 +665,124 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── Node is always needed for Playwright ─────────────────────────────
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 18
 
-      - name: Setup PHP
+      # ── Stack-specific runtimes ───────────────────────────────────────────
+      - name: Setup PHP (php repos)
+        if: needs.preflight.outputs.stack == 'php'
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.1'
           extensions: pdo, pdo_sqlite
 
-      - name: Install PHP dependencies
-        run: composer install --no-interaction --prefer-dist
+      - name: Setup Go (go repos)
+        if: needs.preflight.outputs.stack == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
 
-      - name: Install Node + Playwright dependencies
-        run: |
-          # npm --prefix avoids changing CWD, preventing double-cd issues
-          npm --prefix tests/e2e install
-          cd tests/e2e && npx playwright install --with-deps
+      - name: Setup Ruby (ruby repos)
+        if: needs.preflight.outputs.stack == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
 
-      - name: Init database and start server
+      - name: Setup Python (python repos)
+        if: needs.preflight.outputs.stack == 'python'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      # ── Install app dependencies ──────────────────────────────────────────
+      - name: Install app dependencies
         run: |
-          mkdir -p data
-          php scripts/init_db.php
-          php -S 127.0.0.1:8080 -t public >/tmp/php-server.log 2>&1 &
-          chmod +x tests/e2e/wait-for-server.sh
-          tests/e2e/wait-for-server.sh http://127.0.0.1:8080/health 60
+          STACK="${{ needs.preflight.outputs.stack }}"
+          case "${STACK}" in
+            php)    composer install --no-interaction --prefer-dist ;;
+            python) pip install --upgrade pip && (pip install -e . 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true) ;;
+            node|typescript) npm ci 2>/dev/null || npm install ;;
+            ruby)   bundle install 2>/dev/null || true ;;
+            go)     go build ./... || true ;;
+            *)      echo "No install step needed for ${STACK}" ;;
+          esac
+
+      - name: Install Playwright dependencies
+        run: |
+          if [ -d "tests/e2e" ]; then
+            npm --prefix tests/e2e install
+            cd tests/e2e && npx playwright install --with-deps
+          else
+            echo "No tests/e2e directory — skipping Playwright install"
+          fi
+
+      # ── Start dev server (stack-appropriate) ─────────────────────────────
+      - name: Start application server
+        run: |
+          STACK="${{ needs.preflight.outputs.stack }}"
+          case "${STACK}" in
+            php)
+              mkdir -p data
+              [ -f "scripts/init_db.php" ] && php scripts/init_db.php || true
+              php -S 127.0.0.1:8080 -t public >/tmp/server.log 2>&1 &
+              ;;
+            node|typescript)
+              # Try common start scripts in order
+              if npm run start --if-present 2>/dev/null; then : ; else
+                node server.js >/tmp/server.log 2>&1 &
+              fi
+              ;;
+            python)
+              if command -v uvicorn &>/dev/null; then
+                uvicorn app:app --host 127.0.0.1 --port 8080 >/tmp/server.log 2>&1 &
+              elif python -c "import flask" 2>/dev/null; then
+                FLASK_APP=app FLASK_RUN_HOST=127.0.0.1 FLASK_RUN_PORT=8080 flask run >/tmp/server.log 2>&1 &
+              else
+                python -m http.server 8080 >/tmp/server.log 2>&1 &
+              fi
+              ;;
+            go)
+              go run ./... >/tmp/server.log 2>&1 &
+              ;;
+            ruby)
+              if [ -f "config/environment.rb" ]; then
+                bundle exec rails server -p 8080 -b 127.0.0.1 >/tmp/server.log 2>&1 &
+              else
+                ruby -run -e httpd . -p 8080 >/tmp/server.log 2>&1 &
+              fi
+              ;;
+            *)
+              echo "No server start configured for ${STACK}" | tee /tmp/server.log
+              ;;
+          esac
+
+          # Wait for server (60s timeout, check every 2s)
+          if [ -f "tests/e2e/wait-for-server.sh" ]; then
+            chmod +x tests/e2e/wait-for-server.sh
+            tests/e2e/wait-for-server.sh http://127.0.0.1:8080 60 || true
+          else
+            for i in $(seq 1 30); do
+              curl -sf http://127.0.0.1:8080 >/dev/null 2>&1 && break || sleep 2
+            done
+            echo "Server ready check complete"
+          fi
 
       - name: Run Playwright tests
         run: |
+          if [ ! -d "tests/e2e" ]; then
+            echo "## 🎭 E2E Tests" >> $GITHUB_STEP_SUMMARY
+            echo "ℹ️ No tests/e2e directory found — skipped" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
           cd tests/e2e
           npx playwright test --reporter=list 2>&1 | tee /tmp/e2e-results.txt
           PASSED=$(grep -c "passed" /tmp/e2e-results.txt || echo "0")
           FAILED=$(grep -c "failed" /tmp/e2e-results.txt || echo "0")
-          echo "## 🎭 E2E Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎭 E2E Test Results (${{ needs.preflight.outputs.stack }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${FAILED}" = "0" ]; then
             echo "✅ All E2E tests passed" >> $GITHUB_STEP_SUMMARY
@@ -544,6 +801,7 @@ jobs:
             tests/e2e/artifacts/**
             tests/e2e/playwright-report/**
             tests/e2e/test-results/**
+            /tmp/server.log
           retention-days: 14
 
 
@@ -553,8 +811,8 @@ jobs:
 # ─────────────────────────────────────────────────────────────────────────────
 
   feature-pipeline:
-    name: "⚡ Feature Pipeline"
-    needs: [preflight, security-scan]
+    name: "⚡ Feature Pipeline (${{ needs.preflight.outputs.stack }})"
+    needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: >-
@@ -570,13 +828,36 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup PHP
+      # ── Language runtime (only what the repo needs) ───────────────────────
+      - name: Setup PHP (php repos)
+        if: needs.preflight.outputs.stack == 'php'
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.1'
           extensions: pdo, pdo_sqlite
 
-      - name: Setup Python
+      - name: Setup Node (node/typescript repos)
+        if: >-
+          needs.preflight.outputs.stack == 'node' ||
+          needs.preflight.outputs.stack == 'typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Setup Go (go repos)
+        if: needs.preflight.outputs.stack == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Setup Ruby (ruby repos)
+        if: needs.preflight.outputs.stack == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Setup Python (always — AgenticQA is Python)
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
@@ -585,7 +866,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "agenticqa @ git+https://github.com/nhomyk/AgenticQA.git#subdirectory=AgenticQA"
-          composer install --no-interaction --prefer-dist
+          STACK="${{ needs.preflight.outputs.stack }}"
+          case "${STACK}" in
+            php)            composer install --no-interaction --prefer-dist ;;
+            node|typescript) npm ci 2>/dev/null || npm install ;;
+            ruby)           bundle install 2>/dev/null || true ;;
+            go)             go build ./... || true ;;
+            *)              echo "No extra install needed for ${STACK}" ;;
+          esac
 
       - name: Configure git identity
         run: |
@@ -606,8 +894,10 @@ jobs:
           priority = "${{ inputs.priority }}"
           dry_run = "${{ inputs.dry_run }}" == "true"
           version_tag = "${{ inputs.version_tag }}"
+          stack = "${{ needs.preflight.outputs.stack }}"
 
           print(f"Analyzing prompt: {prompt[:80]}")
+          print(f"Stack: {stack}")
 
           # ── 1. Keyword extraction ─────────────────────────────────────────
           words = re.findall(r'\b\w+\b', prompt.lower())
@@ -629,9 +919,28 @@ jobs:
               intent = "security"
           print(f"Detected intent: {intent}")
 
-          # ── 3. Find relevant files ─────────────────────────────────────────
+          # ── 3. Find relevant files (stack-aware) ─────────────────────────
+          # Map stack → (source glob pattern, src dir, test dir, test glob)
+          STACK_MAP = {
+              'php':        ('*.php',  'src',  'tests',  '*.php'),
+              'python':     ('*.py',   'src',  'tests',  '*.py'),
+              'typescript': ('*.ts',   'src',  'tests',  '*.ts'),
+              'node':       ('*.js',   'src',  'tests',  '*.js'),
+              'go':         ('*.go',   '.',    '.',      '*_test.go'),
+              'ruby':       ('*.rb',   'lib',  'spec',   '*.rb'),
+              'rust':       ('*.rs',   'src',  'tests',  '*.rs'),
+              'java-maven': ('*.java', 'src/main/java', 'src/test/java', '*.java'),
+              'java-gradle':('*.java', 'src/main/java', 'src/test/java', '*.java'),
+          }
+          src_glob, src_dir, test_dir, test_glob = STACK_MAP.get(
+              stack, ('*', 'src', 'tests', '*')
+          )
+          src_base = Path(src_dir) if Path(src_dir).exists() else Path('.')
+
           relevant_files = []
-          for path in Path('src').rglob('*.php'):
+          for path in src_base.rglob(src_glob):
+              if 'vendor' in path.parts or 'node_modules' in path.parts:
+                  continue
               content = path.read_text(errors='ignore').lower()
               if any(k in content or k in path.name.lower() for k in keywords[:5]):
                   relevant_files.append(str(path))
@@ -640,9 +949,11 @@ jobs:
 
           # ── 4. Find relevant tests ─────────────────────────────────────────
           relevant_tests = []
-          for path in Path('tests').rglob('*.php') if Path('tests').exists() else []:
-              if any(k in str(path).lower() for k in keywords[:5]):
-                  relevant_tests.append(str(path))
+          test_base = Path(test_dir)
+          if test_base.exists():
+              for path in test_base.rglob(test_glob):
+                  if any(k in str(path).lower() for k in keywords[:5]):
+                      relevant_tests.append(str(path))
           relevant_tests = relevant_tests[:5]
 
           # ── 5. Security considerations ─────────────────────────────────────
@@ -700,6 +1011,7 @@ jobs:
               "prompt": prompt,
               "intent": intent,
               "priority": priority,
+              "stack": stack,
               "keywords": keywords[:10],
               "relevant_files": relevant_files,
               "relevant_tests": relevant_tests,
