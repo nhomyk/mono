@@ -501,10 +501,13 @@ jobs:
           php-version: '8.1'
           extensions: pdo, pdo_sqlite
 
-      - name: Install dependencies
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Install Node + Playwright dependencies
         run: |
-          composer install --no-interaction --prefer-dist
-          cd tests/e2e && npm ci || npm install
+          # npm --prefix avoids changing CWD, preventing double-cd issues
+          npm --prefix tests/e2e install
           cd tests/e2e && npx playwright install --with-deps
 
       - name: Init database and start server
