@@ -10,14 +10,11 @@ namespace App;
  */
 class ApiRouter
 {
-    private \PDO $pdo;
-
     /** @var array<string, array{handler: callable, method: string}> */
     private array $routes = [];
 
-    public function __construct(\PDO $pdo)
+    public function __construct()
     {
-        $this->pdo = $pdo;
     }
 
     public function get(string $path, callable $handler): void

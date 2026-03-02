@@ -10,7 +10,7 @@ use App\RateLimiter;
 
 // ── Setup ────────────────────────────────────────────────────────────────────
 $pdo = Database::pdoFromEnv();
-$router = new ApiRouter($pdo);
+$router = new ApiRouter();
 $limiter = new RateLimiter(60, 60);
 
 // ── Auth check ───────────────────────────────────────────────────────────────
