@@ -10,7 +10,11 @@ namespace App;
  */
 class ApiRouter
 {
-    /** @var array<string, array{handler: callable, method: string}> */
+    /**
+     * Routes keyed by path, then by HTTP method.
+     *
+     * @var array<string, array<string, callable>>
+     */
     private array $routes = [];
 
     public function __construct()
@@ -19,17 +23,17 @@ class ApiRouter
 
     public function get(string $path, callable $handler): void
     {
-        $this->routes[$path] = ['handler' => $handler, 'method' => 'GET'];
+        $this->routes[$path]['GET'] = $handler;
     }
 
     public function post(string $path, callable $handler): void
     {
-        $this->routes[$path] = ['handler' => $handler, 'method' => 'POST'];
+        $this->routes[$path]['POST'] = $handler;
     }
 
     public function delete(string $path, callable $handler): void
     {
-        $this->routes[$path] = ['handler' => $handler, 'method' => 'DELETE'];
+        $this->routes[$path]['DELETE'] = $handler;
     }
 
     /**
@@ -39,27 +43,26 @@ class ApiRouter
      */
     public function dispatch(string $method, string $path, string $rawBody = ''): array
     {
+        $body = $rawBody !== '' ? json_decode($rawBody, true) : [];
+        $body = $body ?? [];
+
         // Try exact match first
         if (isset($this->routes[$path])) {
-            $route = $this->routes[$path];
-            if ($route['method'] !== $method) {
+            if (!isset($this->routes[$path][$method])) {
                 return [405, ['error' => 'Method not allowed']];
             }
-            $params = [];
-            $body = $rawBody !== '' ? json_decode($rawBody, true) : [];
-            return ($route['handler'])($params, $body ?? []);
+            return ($this->routes[$path][$method])([], $body);
         }
 
         // Try pattern match (e.g. /api/items/:id)
-        foreach ($this->routes as $pattern => $route) {
+        foreach ($this->routes as $pattern => $methods) {
             $regex = preg_replace('#:([a-zA-Z_]+)#', '(?P<$1>[^/]+)', $pattern);
             if ($regex !== null && preg_match('#^' . $regex . '$#', $path, $matches)) {
-                if ($route['method'] !== $method) {
+                if (!isset($methods[$method])) {
                     return [405, ['error' => 'Method not allowed']];
                 }
                 $params = array_filter($matches, 'is_string', ARRAY_FILTER_USE_KEY);
-                $body = $rawBody !== '' ? json_decode($rawBody, true) : [];
-                return ($route['handler'])($params, $body ?? []);
+                return ($methods[$method])($params, $body);
             }
         }
 

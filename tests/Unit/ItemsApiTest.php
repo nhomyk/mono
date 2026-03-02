@@ -23,7 +23,7 @@ class ItemsApiTest extends TestCase
             'CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
         );
 
-        $this->router = new ApiRouter($this->pdo);
+        $this->router = new ApiRouter();
         $this->registerRoutes();
     }
 
