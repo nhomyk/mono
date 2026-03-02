@@ -731,8 +731,10 @@ jobs:
               php -S 127.0.0.1:8080 -t public >/tmp/server.log 2>&1 &
               ;;
             node|typescript)
-              # Try common start scripts in order
-              if npm run start --if-present 2>/dev/null; then : ; else
+              # Run start script in background; fall back to node server.js
+              if grep -q '"start"' package.json 2>/dev/null; then
+                npm run start >/tmp/server.log 2>&1 &
+              else
                 node server.js >/tmp/server.log 2>&1 &
               fi
               ;;
@@ -1182,6 +1184,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: feature-analysis-${{ github.run_id }}
+          if-no-files-found: ignore
           path: |
             /tmp/feature-analysis.json
             /tmp/feature-report.md
