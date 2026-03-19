@@ -20,20 +20,63 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install AgenticQA
+        run: |
+          python -m pip install --upgrade pip
+          pip install "agenticqa @ git+https://${{ secrets.AGENTICQA_PAT }}@github.com/nhomyk/AgenticQA.git#subdirectory=AgenticQA"
+
       - name: Run AgenticQA scan
         id: scan
-        uses: nhomyk/AgenticQA@90a59c9ef8928fcdb01931bab07f568ecf0583eb  # pinned SHA — update when releasing new version
-        with:
-          path: '.'
-          fail-on-critical: 'false'
-          output-file: 'agenticqa-results.json'
-          sarif: 'true'
+        run: |
+          python -c "
+          import json, sys
+          sys.path.insert(0, '.')
+          from agenticqa.security.owasp_scanner import OWASPScanner
+          from agenticqa.export.sarif import SARIFExporter
+
+          scanner = OWASPScanner()
+          result = scanner.scan('.')
+          findings = result.findings
+
+          # Write JSON results
+          output = {
+              'total_findings': len(findings),
+              'critical_findings': len([f for f in findings if f.severity == 'critical']),
+              'high_findings': len([f for f in findings if f.severity == 'high']),
+              'risk_score': result.risk_score,
+              'files_scanned': result.files_scanned,
+          }
+          with open('agenticqa-results.json', 'w') as f:
+              json.dump(output, f, indent=2)
+
+          # Write SARIF
+          try:
+              exporter = SARIFExporter()
+              sarif = exporter.export(findings, repo_path='.')
+              with open('agenticqa-results.sarif', 'w') as f:
+                  json.dump(sarif, f, indent=2)
+          except Exception as e:
+              print(f'SARIF export skipped: {e}')
+
+          print(f'Findings: {len(findings)} ({output[\"critical_findings\"]} critical, {output[\"high_findings\"]} high)')
+          print(f'Risk score: {result.risk_score}')
+          "
 
       - name: Print scan summary
         if: always()
         run: |
           echo "## AgenticQA Security Scan Results"
-          echo "- Total findings: ${{ steps.scan.outputs.total-findings }}"
-          echo "- Critical findings: ${{ steps.scan.outputs.critical-findings }}"
-          echo "- Risk level: ${{ steps.scan.outputs.risk-level }}"
-          echo "- Scanners passed: ${{ steps.scan.outputs.scanners-ok }}"
+          cat agenticqa-results.json 2>/dev/null || echo "No results file"
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && hashFiles('agenticqa-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: agenticqa-results.sarif
+          category: agenticqa-client
+        continue-on-error: true
