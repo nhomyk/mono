@@ -41,7 +41,7 @@ jobs:
       # ── 2. EU AI Act Compliance ────────────────────────────────────────────
       - name: EU AI Act Compliance Check
         id: euaiact
-        uses: nhomyk/eu-ai-act-check-action@v1
+        uses: nhomyk/eu-ai-act-check-action@v2
         with:
           fail-on-noncompliant: 'false'
           sarif-output: 'eu-ai-act-results.sarif'
