@@ -455,7 +455,7 @@ jobs:
         if: >-
           needs.preflight.outputs.stack == 'java-maven' ||
           needs.preflight.outputs.stack == 'java-gradle'
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
