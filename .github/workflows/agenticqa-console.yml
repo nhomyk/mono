@@ -134,7 +134,7 @@ jobs:
       stack: ${{ steps.detect.outputs.stack }}
       agenticqa_ok: ${{ steps.check.outputs.agenticqa_ok }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -267,7 +267,7 @@ jobs:
       risk_level: ${{ steps.scan.outputs.risk_level }}
       critical_count: ${{ steps.scan.outputs.critical_count }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -418,7 +418,7 @@ jobs:
       test_count: ${{ steps.run_tests.outputs.test_count }}
       linter_ok: ${{ steps.run_linter.outputs.linter_ok }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # ── Language runtime setup (only the detected stack) ─────────────────
 
@@ -663,7 +663,7 @@ jobs:
       (inputs.run_type == 'test' || inputs.run_type == 'full-pipeline') &&
       (inputs.test_scope == 'e2e-only' || inputs.test_scope == 'all')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # ── Node is always needed for Playwright ─────────────────────────────
       - name: Setup Node
@@ -825,7 +825,7 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
