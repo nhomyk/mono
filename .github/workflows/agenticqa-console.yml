@@ -168,7 +168,7 @@ jobs:
         if: >-
           steps.detect.outputs.stack == 'node' ||
           steps.detect.outputs.stack == 'typescript'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 18
 
@@ -434,7 +434,7 @@ jobs:
         if: >-
           needs.preflight.outputs.stack == 'node' ||
           needs.preflight.outputs.stack == 'typescript'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 18
 
@@ -667,7 +667,7 @@ jobs:
 
       # ── Node is always needed for Playwright ─────────────────────────────
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 18
 
@@ -842,7 +842,7 @@ jobs:
         if: >-
           needs.preflight.outputs.stack == 'node' ||
           needs.preflight.outputs.stack == 'typescript'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 18
 
